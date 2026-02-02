@@ -198,7 +198,7 @@ def train(args):
         print("RESUMING FROM CHECKPOINT")
         print("=" * 60)
         config = checkpoint['config']
-        start_epoch = checkpoint['epoch'] + 1
+        start_epoch = checkpoint['epoch']
         best_val_loss = checkpoint['best_val_loss']
         best_auc = checkpoint['best_auc']
 
@@ -239,7 +239,8 @@ def train(args):
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    # Learning rate scheduler
+    # Learning rate scheduler+
+
     scheduler = None
     if args.scheduler == "plateau":
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(

@@ -29,7 +29,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train CNN on NIH Chest X-ray Dataset")
     
     # Paths
-    parser.add_argument("--data-dir", type=str, default="./data", help="Root data directory")
+    parser.add_argument("--data-dir", type=str, default="./data_resized", help="Root data directory")
     parser.add_argument("--csv-file", type=str, default="./data/Data_Entry_2017.csv", help="Path to Data Entry CSV")
     parser.add_argument("--train-list", type=str, default="./data/train_val_list.txt", help="Path to train/val list")
     parser.add_argument("--test-list", type=str, default="./data/test_list.txt", help="Path to test list")
@@ -45,7 +45,8 @@ def get_args():
     # Flags
     parser.add_argument("--dry-run", action="store_true", help="Run a fast development run with limited data")
     parser.add_argument("--save-model", action="store_true", help="Save the best model checkpoint")
-    
+    parser.add_argument("--resume", action="store_true", help="Resume training from checkpoint")
+
     return parser.parse_args()
 
 def get_device():
@@ -80,9 +81,8 @@ def train(args):
     device = get_device()
     print(f"Device: {device}")
 
-    # Transforms
+    # Transforms (images in data_resized/ are already 224x224)
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
@@ -148,12 +148,33 @@ def train(args):
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
+    # Resume from checkpoint if requested
+    start_epoch = 0
+    best_val_loss = float('inf')
+    checkpoint_path = f"{args.model_name}_best.pth"
+
+    if args.resume and os.path.exists(checkpoint_path):
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+        # Load to CPU first to avoid DirectML compatibility issues with map_location
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        # Move optimizer state tensors to device (needed for momentum buffers etc.)
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+        start_epoch = checkpoint['epoch'] + 1
+        best_val_loss = checkpoint['best_val_loss']
+        print(f"Resumed from epoch {start_epoch}, best val loss: {best_val_loss:.4f}")
+    elif args.resume:
+        print(f"No checkpoint found at {checkpoint_path}, starting fresh")
+
     # Training Loop
     print("Starting Training...")
-    best_val_loss = float('inf')
     start_time = time.time()
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         train_loss = 0.0
         
@@ -203,30 +224,34 @@ def train(args):
 
         print(f"Epoch [{epoch+1}/{args.epochs}] Train Loss: {train_loss:.4f} Val Loss: {val_loss:.4f} Val AUC: {auc_score:.4f}")
 
+        # Log epoch results
+        epoch_metrics = {
+            'Epoch': epoch + 1,
+            'Train Loss': train_loss,
+            'Val Loss': val_loss,
+            'Val AUC': auc_score,
+        }
+        epoch_hyperparams = {
+            'Batch Size': args.batch_size,
+            'LR': args.lr,
+            'Dry Run': args.dry_run
+        }
+        log_experiment(args.output_file, args.model_name, epoch_hyperparams, epoch_metrics)
+
         # Save Best Model
         if args.save_model and val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), f"{args.model_name}_best.pth")
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_loss': best_val_loss,
+            }
+            torch.save(checkpoint, f"{args.model_name}_best.pth")
             print("Saved Best Model")
 
     total_time = time.time() - start_time
     print(f"Training Complete. Total Time: {total_time:.2f}s")
-
-    # Log to Excel
-    metrics = {
-        'Train Loss': train_loss,
-        'Val Loss': val_loss,
-        'Val AUC': auc_score,
-        'Duration (s)': total_time
-    }
-    hyperparams = {
-        'Epochs': args.epochs,
-        'Batch Size': args.batch_size,
-        'LR': args.lr,
-        'Dry Run': args.dry_run
-    }
-    
-    log_experiment(args.output_file, args.model_name, hyperparams, metrics)
 
 if __name__ == "__main__":
     args = get_args()
