@@ -3,3 +3,5 @@ venv311
 data_resized
 */__pycache__
 *.pth
+.claude
+CLAUDE.md
